@@ -5,8 +5,10 @@
 # Copyright: David Cowen 2021
 
 from __future__ import print_function
-import boto3, argparse, os, sys, json, time
+import boto3, argparse, os, json, time, datetime
 from botocore.exceptions import ClientError
+from dateutil.tz import tzlocal
+from sys import *
 
 def main(args):
     access_key_id = args.access_key_id
@@ -21,35 +23,52 @@ def main(args):
         if session_token.strip() == '':
             session_token = None
 
-    # Begin permissions enumeration
+    # Get account ID
+    sts_client = boto3.client(
+        "sts", 
+        aws_access_key_id=access_key_id, 
+        aws_secret_access_key=secret_access_key, 
+        aws_session_token=session_token
+        )
+    account_id = sts_client.get_caller_identity()["Account"]
 
-    client = boto3.client(
+    # Get file time
+    file_time = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+    # String format file name using account ID and file time
+    out_file = "{0}_{1}_90days.json".format(file_time, account_id)
+    print("Output File: {0}".format(out_file))
+
+    # Begin permissions enumeration
+    ct_client = boto3.client(
         'cloudtrail',
         aws_access_key_id=access_key_id,
         aws_secret_access_key=secret_access_key,
         aws_session_token=session_token
     )
-    paginator = client.get_paginator('lookup_events')
-
+    paginator = ct_client.get_paginator('lookup_events')
     StartingToken = None
-    cloudTraillogs = open("90days.json","w")
     total_logs = 0
     page_iterator = paginator.paginate(
         LookupAttributes=[],
-        PaginationConfig={'PageSize':50, 'StartingToken':StartingToken })
-    for page in page_iterator:
-        for event in page["Events"]:
-            cloudTraillogs.write(str(event))
-            
-            
-        try:
-            token_file = open("token","w") 
-            token_file.write(page["NextToken"]) 
-            StartingToken = page["NextToken"]
-        except KeyError:
-            exit()
-        print("Total Logs downloaded: ",total_logs)
-        total_logs = total_logs +50
+        PaginationConfig={'PageSize':50, 'StartingToken':StartingToken})
+    with open(out_file,"w") as cloudTraillogs:
+        for page in page_iterator:
+            for event in page["Events"]:
+                event["EventTime"] = event["EventTime"].astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                json.dump(event, cloudTraillogs)
+                        
+            try:
+                token_file = open("token","w") 
+                token_file.write(page["NextToken"]) 
+                StartingToken = page["NextToken"]
+            except KeyError:
+                exit()
+
+            stdout.write("Total Logs Downloaded: {}\r".format(total_logs))
+            stdout.flush()           
+            total_logs = total_logs + 50
+        
 
 
 if __name__ == '__main__':
